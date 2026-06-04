@@ -128,10 +128,11 @@ services:
         environment:
             ALLOW_PLAINTEXT_LISTENER: 'true'
         healthcheck:
-            test: curl -f http://localhost:9644/v1/status/ready || exit 1
-            interval: 3s
+            test: ['CMD-SHELL', 'rpk topic list --brokers localhost:9092 >/dev/null 2>&1 || exit 1']
+            interval: 5s
             timeout: 10s
-            retries: 10
+            retries: 30
+            start_period: 75s
         volumes:
             - redpanda-data:/var/lib/redpanda/data
 
@@ -321,6 +322,26 @@ services:
             redis7:
                 condition: service_healthy
 
+    migrate:
+        image: $REGISTRY_URL:$POSTHOG_APP_TAG
+        restart: 'no'
+        logging: *default-logging
+        command: ./bin/migrate
+        environment:
+            <<: *posthog-env
+            POSTHOG_SKIP_MIGRATION_CHECKS: '1'
+        depends_on:
+            db:
+                condition: service_healthy
+            redis7:
+                condition: service_healthy
+            clickhouse:
+                condition: service_healthy
+            kafka-init:
+                condition: service_completed_successfully
+            personhog-router:
+                condition: service_started
+
     web:
         image: $REGISTRY_URL:$POSTHOG_APP_TAG
         restart: on-failure
@@ -340,6 +361,8 @@ services:
                 condition: service_healthy
             kafka:
                 condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
             objectstorage:
                 condition: service_started
             personhog-router:
@@ -362,6 +385,8 @@ services:
                 condition: service_healthy
             kafka:
                 condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
             web:
                 condition: service_started
             personhog-router:
@@ -388,6 +413,8 @@ services:
                 condition: service_healthy
             kafka:
                 condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
             objectstorage:
                 condition: service_started
 
@@ -413,6 +440,8 @@ services:
                 condition: service_healthy
             kafka:
                 condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
 
     proxy:
         image: caddy
