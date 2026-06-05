@@ -33,12 +33,19 @@ x-posthog-env: &posthog-env
     CLICKHOUSE_DATABASE: posthog
     CLICKHOUSE_SECURE: 'false'
     CLICKHOUSE_VERIFY: 'false'
-    CLICKHOUSE_API_USER: default
-    CLICKHOUSE_API_PASSWORD: ''
-    CLICKHOUSE_APP_USER: default
-    CLICKHOUSE_APP_PASSWORD: ''
-    CLICKHOUSE_BILLING_USER: default
-    CLICKHOUSE_BILLING_PASSWORD: ''
+    CLICKHOUSE_USER: default
+    CLICKHOUSE_PASSWORD: ''
+    CLICKHOUSE_CLUSTER: posthog
+    CLICKHOUSE_SINGLE_SHARD_CLUSTER: posthog_single_shard
+    CLICKHOUSE_WRITABLE_CLUSTER: posthog_writable
+    CLICKHOUSE_PRIMARY_REPLICA_CLUSTER: posthog_primary_replica
+    CLICKHOUSE_MIGRATIONS_CLUSTER: posthog_migrations
+    CLICKHOUSE_API_USER: api
+    CLICKHOUSE_API_PASSWORD: apipass
+    CLICKHOUSE_APP_USER: app
+    CLICKHOUSE_APP_PASSWORD: apppass
+    CLICKHOUSE_BILLING_USER: billing
+    CLICKHOUSE_BILLING_PASSWORD: billingpass
     OBJECT_STORAGE_ENABLED: 'true'
     OBJECT_STORAGE_ENDPOINT: http://objectstorage:19000
     OBJECT_STORAGE_PUBLIC_ENDPOINT: https://$DOMAIN
@@ -188,23 +195,225 @@ services:
             kafka:
                 condition: service_healthy
 
+    zookeeper:
+        image: zookeeper:3.7.0
+        restart: on-failure
+        logging: *default-logging
+        volumes:
+            - zookeeper-data:/data
+            - zookeeper-datalog:/datalog
+            - zookeeper-logs:/logs
+
     clickhouse:
         image: ${CLICKHOUSE_SERVER_IMAGE:-clickhouse/clickhouse-server:26.3.10.60}
         restart: on-failure
         logging: *default-logging
+        entrypoint: /bin/sh
+        command:
+            - -c
+            - |
+                set -eu
+                mkdir -p /etc/clickhouse-server/config.d /etc/clickhouse-server/users.d
+                cat > /etc/clickhouse-server/config.d/posthog.xml <<'EOF'
+                <clickhouse>
+                    <tcp_port>9000</tcp_port>
+                    <remote_servers>
+                        <posthog>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </posthog>
+                        <posthog_single_shard>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </posthog_single_shard>
+                        <posthog_migrations>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </posthog_migrations>
+                        <posthog_writable>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </posthog_writable>
+                        <posthog_primary_replica>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </posthog_primary_replica>
+                        <ai_events>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </ai_events>
+                        <aux>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </aux>
+                        <ops>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </ops>
+                        <sessions>
+                            <shard>
+                                <replica>
+                                    <host>clickhouse</host>
+                                    <port>9000</port>
+                                </replica>
+                            </shard>
+                        </sessions>
+                    </remote_servers>
+                    <named_collections>
+                        <msk_cluster>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </msk_cluster>
+                        <warpstream_ingestion>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </warpstream_ingestion>
+                        <warpstream_calculated_events>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </warpstream_calculated_events>
+                        <warpstream_replay>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </warpstream_replay>
+                        <warpstream_shared>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </warpstream_shared>
+                        <warpstream_cyclotron>
+                            <kafka_broker_list from_env="KAFKA_HOSTS"/>
+                        </warpstream_cyclotron>
+                    </named_collections>
+                    <zookeeper>
+                        <node>
+                            <host>zookeeper</host>
+                            <port>2181</port>
+                        </node>
+                    </zookeeper>
+                    <distributed_ddl>
+                        <path>/clickhouse/task_queue/ddl</path>
+                    </distributed_ddl>
+                    <macros>
+                        <shard>01</shard>
+                        <replica>ch1</replica>
+                        <hostClusterType>online</hostClusterType>
+                        <hostClusterRole>data</hostClusterRole>
+                    </macros>
+                </clickhouse>
+                EOF
+                cat > /etc/clickhouse-server/users.d/posthog.xml <<'EOF'
+                <clickhouse>
+                    <profiles>
+                        <api>
+                            <profile>default</profile>
+                        </api>
+                        <app>
+                            <profile>default</profile>
+                        </app>
+                        <billing>
+                            <profile>default</profile>
+                        </billing>
+                    </profiles>
+                    <users>
+                        <default>
+                            <password></password>
+                            <networks>
+                                <ip>::/0</ip>
+                            </networks>
+                            <profile>default</profile>
+                            <quota>default</quota>
+                            <access_management>1</access_management>
+                            <named_collection_control>1</named_collection_control>
+                            <show_named_collections>1</show_named_collections>
+                            <show_named_collections_secrets>1</show_named_collections_secrets>
+                        </default>
+                        <api>
+                            <password>apipass</password>
+                            <networks>
+                                <ip>::/0</ip>
+                            </networks>
+                            <profile>api</profile>
+                            <quota>default</quota>
+                        </api>
+                        <app>
+                            <password>apppass</password>
+                            <networks>
+                                <ip>::/0</ip>
+                            </networks>
+                            <profile>app</profile>
+                            <quota>default</quota>
+                        </app>
+                        <billing>
+                            <password>billingpass</password>
+                            <networks>
+                                <ip>::/0</ip>
+                            </networks>
+                            <profile>billing</profile>
+                            <quota>default</quota>
+                        </billing>
+                    </users>
+                </clickhouse>
+                EOF
+                exec /entrypoint.sh clickhouse-server --config-file=/etc/clickhouse-server/config.xml
         environment:
             CLICKHOUSE_DB: posthog
             CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
             KAFKA_HOSTS: kafka:9092
         healthcheck:
             test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1']
-            interval: 3s
+            interval: 5s
             timeout: 10s
-            retries: 10
+            retries: 30
+            start_period: 30s
         volumes:
             - clickhouse-data:/var/lib/clickhouse
         depends_on:
             kafka:
+                condition: service_healthy
+            zookeeper:
+                condition: service_started
+
+    clickhouse-init:
+        image: alpine:3.19
+        restart: 'no'
+        entrypoint: /bin/sh
+        logging: *default-logging
+        command:
+            - -c
+            - |
+                set -eu
+                apk add --no-cache curl
+                until curl -sf http://clickhouse:8123/ping >/dev/null 2>&1; do sleep 2; done
+                curl -sf 'http://clickhouse:8123/' --data "CREATE TABLE IF NOT EXISTS system.crash_log (hostname LowCardinality(String) DEFAULT hostName(), event_date Date, event_time DateTime, timestamp_ns UInt64, signal Int32, thread_id UInt64, query_id String, trace Array(UInt64), trace_full Array(String), version String, revision UInt32, build_id String) ENGINE = MergeTree ORDER BY (event_date, event_time) TTL event_date + INTERVAL 30 DAY"
+        depends_on:
+            clickhouse:
                 condition: service_healthy
 
     objectstorage:
@@ -337,6 +546,8 @@ services:
                 condition: service_healthy
             clickhouse:
                 condition: service_healthy
+            clickhouse-init:
+                condition: service_completed_successfully
             kafka-init:
                 condition: service_completed_successfully
             personhog-router:
@@ -528,6 +739,9 @@ volumes:
     postgres-data:
     redis7-data:
     redpanda-data:
+    zookeeper-data:
+    zookeeper-datalog:
+    zookeeper-logs:
     clickhouse-data:
     objectstorage:
     caddy-data:
