@@ -381,7 +381,10 @@ services:
                     </users>
                 </clickhouse>
                 EOF
-                exec /entrypoint.sh clickhouse-server --config-file=/etc/clickhouse-server/config.xml
+                # Do not pass `clickhouse-server` as argv[1] — that bypasses the
+                # entrypoint user switch and CH 26+ rejects root on the data dir.
+                # Default CLICKHOUSE_CONFIG already points at config.xml.
+                exec /entrypoint.sh
         environment:
             CLICKHOUSE_DB: posthog
             CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
