@@ -35,10 +35,10 @@ x-posthog-env: &posthog-env
     OBJECT_STORAGE_ACCESS_KEY_ID: object_storage_root_user
     OBJECT_STORAGE_SECRET_ACCESS_KEY: object_storage_root_password
     OBJECT_STORAGE_FORCE_PATH_STYLE: 'true'
-    SESSION_RECORDING_V2_S3_ENDPOINT: http://seaweedfs:8333
-    SESSION_RECORDING_V2_S3_ACCESS_KEY_ID: any
-    SESSION_RECORDING_V2_S3_SECRET_ACCESS_KEY: any
-    RECORDING_API_URL: http://recording-api:6738
+    SESSION_RECORDING_V2_S3_ENDPOINT: http://objectstorage:19000
+    SESSION_RECORDING_V2_S3_ACCESS_KEY_ID: object_storage_root_user
+    SESSION_RECORDING_V2_S3_SECRET_ACCESS_KEY: object_storage_root_password
+    RECORDING_API_URL: ''
     API_QUERIES_PER_TEAM: '{"1": 100}'
     CDP_API_URL: http://plugins:6738
     FLAGS_REDIS_ENABLED: 'false'
@@ -198,30 +198,6 @@ services:
         volumes:
             - objectstorage:/data
 
-    seaweedfs:
-        image: chrislusf/seaweedfs:4.03
-        restart: on-failure
-        entrypoint:
-            - /bin/sh
-            - -c
-            - |
-                /usr/bin/weed "$$@" & pid=$$!
-                until echo s3.bucket.list | /usr/bin/weed shell -master=localhost:9333 2>&1 | grep -q posthog; do
-                    echo "s3.bucket.create -name posthog" | /usr/bin/weed shell -master=localhost:9333 2>&1 || true
-                    sleep 5
-                done
-                wait $${pid}
-            - --
-        command: ['server', '-s3', '-s3.port=8333', '-filer', '-dir=/data']
-        healthcheck:
-            test: ['CMD-SHELL', "echo 's3.bucket.list' | /usr/bin/weed shell -master=localhost:9333 2>&1 | grep -q posthog"]
-            interval: 5s
-            timeout: 10s
-            retries: 30
-            start_period: 10s
-        volumes:
-            - seaweedfs:/data
-
     personhog-replica:
         image: ghcr.io/posthog/posthog/personhog-replica:master
         restart: on-failure
@@ -255,28 +231,6 @@ services:
             CAPTURE_MODE: events
             RUST_LOG: info,rdkafka=warn
         depends_on: [kafka, redis7]
-
-    replay-capture:
-        image: ghcr.io/posthog/posthog/capture:master
-        restart: on-failure
-        environment:
-            ADDRESS: 0.0.0.0:3000
-            KAFKA_TOPIC: session_recording_snapshot_item_events
-            KAFKA_HOSTS: kafka:9092
-            REDIS_URL: redis://redis7:6379/
-            CAPTURE_MODE: recordings
-        depends_on: [kafka, redis7]
-
-    property-defs-rs:
-        image: ghcr.io/posthog/posthog/property-defs-rs:master
-        restart: on-failure
-        environment:
-            DATABASE_URL: postgres://posthog:posthog@db:5432/posthog
-            KAFKA_HOSTS: kafka:9092
-            SKIP_WRITES: 'false'
-            SKIP_READS: 'false'
-            FILTER_MODE: opt-out
-        depends_on: [kafka-init, db]
 
     feature-flags:
         image: ghcr.io/posthog/posthog/feature-flags:master
@@ -314,22 +268,6 @@ services:
             RUST_LOG: info
         depends_on: [redis7]
 
-    livestream:
-        image: ghcr.io/posthog/posthog/livestream:master
-        restart: on-failure
-        environment:
-            LIVESTREAM_JWT_SECRET: $POSTHOG_SECRET
-        depends_on: [kafka]
-
-    cyclotron-janitor:
-        image: ghcr.io/posthog/posthog/cyclotron-janitor:master
-        restart: on-failure
-        environment:
-            DATABASE_URL: postgres://posthog:posthog@db:5432/posthog
-            KAFKA_HOSTS: kafka:9092
-            KAFKA_TOPIC: clickhouse_app_metrics2
-        depends_on: [db, kafka-init]
-
     migrate:
         image: $REGISTRY_URL:$POSTHOG_APP_TAG
         restart: 'no'
@@ -345,10 +283,10 @@ services:
         command: sh -c "./bin/start-backend & ./bin/start-frontend"
         environment:
             <<: *posthog-env
-            LIVESTREAM_HOST: https://${DOMAIN}/livestream
+            LIVESTREAM_HOST: ''
             OPT_OUT_CAPTURE: ${OPT_OUT_CAPTURE:-false}
             OTEL_SERVICE_NAME: posthog
-        depends_on: [db, redis7, clickhouse, kafka-init, migrate, objectstorage, seaweedfs, personhog-router]
+        depends_on: [db, redis7, clickhouse, kafka-init, migrate, objectstorage, personhog-router]
 
     worker:
         image: $REGISTRY_URL:$POSTHOG_APP_TAG
@@ -385,7 +323,7 @@ services:
         environment:
             <<: *posthog-env
             TEMPORAL_HOST: temporal
-        depends_on: [db, redis7, clickhouse, kafka-init, objectstorage, seaweedfs, temporal, migrate]
+        depends_on: [db, redis7, clickhouse, kafka-init, objectstorage, temporal, migrate]
 
     plugins:
         image: ${REGISTRY_URL}-node:${POSTHOG_NODE_TAG:-latest}
@@ -399,7 +337,7 @@ services:
             CYCLOTRON_NODE_DATABASE_URL: postgres://posthog:posthog@db:5432/posthog
             CDP_REDIS_HOST: redis7
             CDP_REDIS_PORT: '6379'
-        depends_on: [db, redis7, clickhouse, kafka-init, migrate, objectstorage, seaweedfs, personhog-router]
+        depends_on: [db, redis7, clickhouse, kafka-init, migrate, objectstorage, personhog-router]
 
     ingestion-general:
         image: ${REGISTRY_URL}-node:${POSTHOG_NODE_TAG:-latest}
@@ -415,27 +353,6 @@ services:
             CDP_REDIS_HOST: redis7
         depends_on: [db, redis7, clickhouse, kafka-init, migrate, personhog-router]
 
-    ingestion-sessionreplay:
-        image: ${REGISTRY_URL}-node:${POSTHOG_NODE_TAG:-latest}
-        restart: on-failure
-        command: node nodejs/dist/index.js
-        environment:
-            <<: *posthog-env
-            PLUGIN_SERVER_MODE: recordings-blob-ingestion-v2
-            SESSION_RECORDING_V2_S3_TIMEOUT_MS: '120000'
-        depends_on: [db, redis7, kafka-init, seaweedfs, migrate]
-
-    recording-api:
-        image: ${REGISTRY_URL}-node:${POSTHOG_NODE_TAG:-latest}
-        restart: on-failure
-        command: node nodejs/dist/index.js
-        environment:
-            <<: *posthog-env
-            PLUGIN_SERVER_MODE: recording-api
-            SESSION_RECORDING_API_REDIS_HOST: redis7
-            SESSION_RECORDING_API_REDIS_PORT: '6379'
-        depends_on: [db, redis7, clickhouse, migrate]
-
     proxy:
         image: caddy:2-alpine
         entrypoint: sh
@@ -446,10 +363,6 @@ services:
         environment:
             CADDYFILE: |
                 :80 {
-                    @replay path /s /s/*
-                    handle @replay {
-                        reverse_proxy replay-capture:3000
-                    }
                     @capture path /e /e/* /i/v0 /i/v0/* /batch /batch/* /capture /capture/*
                     handle @capture {
                         reverse_proxy capture:3000
@@ -470,13 +383,6 @@ services:
                     handle @webhooks {
                         reverse_proxy plugins:6738
                     }
-                    @live path /livestream /livestream/*
-                    handle @live {
-                        uri strip_prefix /livestream
-                        reverse_proxy livestream:8080 {
-                            flush_interval -1
-                        }
-                    }
                     @storage path /posthog /posthog/*
                     handle @storage {
                         reverse_proxy objectstorage:19000
@@ -491,10 +397,8 @@ services:
         depends_on:
             - web
             - capture
-            - replay-capture
             - feature-flags
             - hypercache-server
-            - livestream
             - plugins
             - objectstorage
 
@@ -507,6 +411,5 @@ volumes:
     zookeeper-logs:
     clickhouse-data:
     objectstorage:
-    seaweedfs:
     caddy-data:
     caddy-config:
